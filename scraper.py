@@ -8,7 +8,7 @@ Usage:
     python scraper.py 1 10            # pages 1-10
 """
 
-import sys, json, time, random, logging, os
+import sys, json, time, random, logging
 from curl_cffi import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
@@ -32,13 +32,28 @@ MAX_RETRIES = 3
 TIMEOUT     = 30
 OUTPUT_FILE = "movies.json"
 
-# ── Session ───────────────────────────────────────────────────────────────────
-S = requests.Session(impersonate="chrome124")
+# ── Proxies ───────────────────────────────────────────────────────────────────
+PROXY_USER = "dxicdysy"
+PROXY_PASS = "yndikr9coeto"
 
-PROXY_URL = os.environ.get("PROXY_URL")
-if PROXY_URL:
-    S.proxies.update({"http": PROXY_URL, "https": PROXY_URL})
-    log.info("Proxy enabled.")
+PROXY_LIST = [
+    ("31.59.20.176",    6754),
+    ("31.56.127.193",   7684),
+    ("45.38.107.97",    6014),
+    ("198.105.121.200", 6462),
+    ("64.137.96.74",    6641),
+    ("198.23.243.226",  6361),
+    ("38.154.185.97",   6370),
+    ("84.247.60.125",   6095),
+    ("142.111.67.146",  5611),
+    ("191.96.254.138",  6185),
+]
+
+def get_random_proxy() -> dict:
+    host, port = random.choice(PROXY_LIST)
+    url = f"http://{PROXY_USER}:{PROXY_PASS}@{host}:{port}"
+    return {"http": url, "https": url}
+
 
 # ── Data model ────────────────────────────────────────────────────────────────
 @dataclass
@@ -51,12 +66,17 @@ class Entry:
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def http_get(url: str) -> str | None:
     for attempt in range(1, MAX_RETRIES + 1):
+        proxy = get_random_proxy()
+        host  = proxy["http"].split("@")[1]
         try:
+            S = requests.Session(impersonate="chrome124")
+            S.proxies.update(proxy)
             r = S.get(url, timeout=TIMEOUT)
             r.raise_for_status()
+            log.info(f"  ✓ via {host}")
             return r.text
         except Exception as e:
-            log.warning(f"GET {url} attempt {attempt}/{MAX_RETRIES} failed: {e}")
+            log.warning(f"GET {url} attempt {attempt}/{MAX_RETRIES} via {host} failed: {e}")
             if attempt < MAX_RETRIES:
                 time.sleep(2 ** attempt)
     return None

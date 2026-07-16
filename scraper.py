@@ -3,6 +3,7 @@ m4uhd.page — URL Collector
 ===========================
 Collect every movie/series URL from /new-movies listing pages.
 Saves to movies.json, movies2.json, etc. (max 1 MB each).
+Tracks processed pages in page_already_processed.txt.
 
 Usage:
     python scraper.py                 # pages 1-2 (default)
@@ -24,14 +25,15 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BASE_URL     = "https://ww1.m4uhd.page"
-START_PAGE   = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-END_PAGE     = int(sys.argv[2]) if len(sys.argv) > 2 else 2
-DELAY_MIN    = 1.5
-DELAY_MAX    = 3.0
-MAX_RETRIES  = 3
-TIMEOUT      = 30
-MAX_FILE_MB  = 1.0   # max size per JSON file in MB
+BASE_URL             = "https://ww1.m4uhd.page"
+START_PAGE           = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+END_PAGE             = int(sys.argv[2]) if len(sys.argv) > 2 else 2
+DELAY_MIN            = 1.5
+DELAY_MAX            = 3.0
+MAX_RETRIES          = 3
+TIMEOUT              = 30
+MAX_FILE_MB          = 1.0   
+PROCESSED_PAGES_FILE = "page_already_processed.txt"
 
 # ── Proxies ───────────────────────────────────────────────────────────────────
 PROXY_USER = "dxicdysy"
@@ -59,31 +61,50 @@ def get_random_proxy() -> dict:
 # ── Data model ────────────────────────────────────────────────────────────────
 @dataclass
 class Entry:
-    title:   str
-    url:     str
-    type:    str          # "movie" or "series"
-    serial_no: int = 0    # Added serial number tracking
-    imdb_id: str = ""
-    tmdb_id: str = ""
-    server1: str = ""
-    server2: str = ""
-    server3: str = ""
-    server4: str = ""
+    title:     str
+    url:       str
+    type:      str         
+    serial_no: int = 0    
+    imdb_id:   str = ""
+    tmdb_id:   str = ""
+    server1:   str = ""
+    server2:   str = ""
+    server3:   str = ""
+    server4:   str = ""
 
 def entry_to_record(e: Entry) -> dict:
-    """Convert to the flat output format."""
     return {
         "serial_no": e.serial_no,
-        "title":   e.title,
-        "url":     e.url,
-        "type":    e.type,
-        "imdb_id": e.imdb_id,
-        "tmdb_id": e.tmdb_id,
-        "server1": e.server1,
-        "server2": e.server2,
-        "server3": e.server3,
-        "server4": e.server4,
+        "title":     e.title,
+        "url":       e.url,
+        "type":      e.type,
+        "imdb_id":   e.imdb_id,
+        "tmdb_id":   e.tmdb_id,
+        "server1":   e.server1,
+        "server2":   e.server2,
+        "server3":   e.server3,
+        "server4":   e.server4,
     }
+
+
+# ── Page Tracking ─────────────────────────────────────────────────────────────
+def get_processed_pages() -> set:
+    """Reads the processed pages file and returns a set of completed page numbers."""
+    if not os.path.exists(PROCESSED_PAGES_FILE):
+        return set()
+    
+    processed = set()
+    with open(PROCESSED_PAGES_FILE, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line.isdigit():
+                processed.add(int(line))
+    return processed
+
+def mark_page_processed(page: int) -> None:
+    """Appends a successfully scraped page number to the tracker file."""
+    with open(PROCESSED_PAGES_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{page}\n")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -104,7 +125,6 @@ def http_get(url: str) -> str | None:
                 time.sleep(2 ** attempt)
     return None
 
-
 def parse_listing_page(html: str) -> list[Entry]:
     soup    = BeautifulSoup(html, "html.parser")
     entries = []
@@ -121,28 +141,39 @@ def parse_listing_page(html: str) -> list[Entry]:
         entries.append(Entry(title=title, url=url, type=kind))
     return entries
 
-
 def collect_urls(start: int, end: int) -> list[Entry]:
     all_entries: list[Entry] = []
+    processed_pages = get_processed_pages()
+    
     for page in range(start, end + 1):
+        if page in processed_pages:
+            log.info(f"Skipping page {page}/{end} — already processed.")
+            continue
+            
         url  = f"{BASE_URL}/new-movies?page={page}"
         log.info(f"Listing page {page}/{end} → {url}")
+        
         html = http_get(url)
         if html is None:
-            log.warning(f"Skipping listing page {page}.")
+            log.warning(f"Skipping listing page {page} due to fetch failure.")
             continue
+            
         found = parse_listing_page(html)
         log.info(f"Page {page}: {len(found)} entries collected.")
         all_entries.extend(found)
+        
+        # Mark as processed only after a successful fetch and parse
+        mark_page_processed(page)
+        
         if page < end:
             time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
-    log.info(f"Total URLs collected on these pages: {len(all_entries)}")
+            
+    log.info(f"Total URLs collected on this run: {len(all_entries)}")
     return all_entries
 
 
 # ── Global State & Deduplication ──────────────────────────────────────────────
 def load_global_state() -> tuple[set, int]:
-    """Reads all existing files to gather known URLs and the max serial number."""
     seen_urls = set()
     max_serial = 0
     file_index = 1
@@ -169,12 +200,9 @@ def load_global_state() -> tuple[set, int]:
 
 # ── Save with 1 MB splitting ──────────────────────────────────────────────────
 def get_json_filename(index: int) -> str:
-    """movies.json, movies2.json, movies3.json ..."""
     return "movies.json" if index == 1 else f"movies{index}.json"
 
-
 def load_existing(filename: str) -> list[dict]:
-    """Load existing records from a JSON file if it exists."""
     if os.path.exists(filename):
         try:
             with open(filename, "r", encoding="utf-8") as f:
@@ -183,12 +211,10 @@ def load_existing(filename: str) -> list[dict]:
             pass
     return []
 
-
 def save_with_split(new_entries: list[Entry]) -> None:
     max_bytes    = MAX_FILE_MB * 1024 * 1024
     new_records  = [entry_to_record(e) for e in new_entries]
 
-    # Find which file index to start appending into
     file_index   = 1
     while True:
         fname = get_json_filename(file_index)
@@ -206,7 +232,6 @@ def save_with_split(new_entries: list[Entry]) -> None:
         serialized = json.dumps(current_records, indent=2, ensure_ascii=False)
 
         if len(serialized.encode("utf-8")) > max_bytes:
-            # Remove last record, save current file, start a new one
             current_records.pop()
             fname = get_json_filename(file_index)
             with open(fname, "w", encoding="utf-8") as f:
@@ -215,11 +240,10 @@ def save_with_split(new_entries: list[Entry]) -> None:
             file_index     += 1
             current_records = [record]
 
-    # Write whatever remains
     fname = get_json_filename(file_index)
     with open(fname, "w", encoding="utf-8") as f:
         f.write(json.dumps(current_records, indent=2, ensure_ascii=False))
-    log.info(f"Saved to {fname} ({len(current_records)} total records in this specific file)")
+    log.info(f"Saved to {fname} ({len(current_records)} total records in this file)")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -228,10 +252,9 @@ if __name__ == "__main__":
     entries = collect_urls(START_PAGE, END_PAGE)
 
     if not entries:
-        log.error("No URLs collected. Check BASE_URL and div.item selectors.")
-        sys.exit(1)
+        log.info("No new URLs collected. Either pages were skipped or parsing failed.")
+        sys.exit(0)
 
-    # Load existing state to ensure no duplicate URLs and to continue serial numbering
     log.info("Checking for duplicates against existing JSON files...")
     seen_urls, current_max_serial = load_global_state()
     
@@ -241,7 +264,7 @@ if __name__ == "__main__":
             current_max_serial += 1
             e.serial_no = current_max_serial
             unique_entries.append(e)
-            seen_urls.add(e.url) # Add to set to prevent duplicates within the exact same run
+            seen_urls.add(e.url) 
             
     if not unique_entries:
         log.info("All scraped URLs are already in your JSON files. Nothing new to add!")

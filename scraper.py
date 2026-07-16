@@ -2,13 +2,14 @@
 m4uhd.page — URL Collector
 ===========================
 Collect every movie/series URL from /new-movies listing pages.
+Saves to movies.json, movies2.json, etc. (max 1 MB each).
 
 Usage:
     python scraper.py                 # pages 1-2 (default)
     python scraper.py 1 10            # pages 1-10
 """
 
-import sys, json, time, random, logging
+import sys, json, time, random, logging, os
 from curl_cffi import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
@@ -23,14 +24,14 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BASE_URL    = "https://ww1.m4uhd.page"
-START_PAGE  = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-END_PAGE    = int(sys.argv[2]) if len(sys.argv) > 2 else 2
-DELAY_MIN   = 1.5
-DELAY_MAX   = 3.0
-MAX_RETRIES = 3
-TIMEOUT     = 30
-OUTPUT_FILE = "movies.json"
+BASE_URL     = "https://ww1.m4uhd.page"
+START_PAGE   = int(sys.argv[1]) if len(sys.argv) > 1 else 1
+END_PAGE     = int(sys.argv[2]) if len(sys.argv) > 2 else 2
+DELAY_MIN    = 1.5
+DELAY_MAX    = 3.0
+MAX_RETRIES  = 3
+TIMEOUT      = 30
+MAX_FILE_MB  = 1.0   # max size per JSON file in MB
 
 # ── Proxies ───────────────────────────────────────────────────────────────────
 PROXY_USER = "dxicdysy"
@@ -58,9 +59,29 @@ def get_random_proxy() -> dict:
 # ── Data model ────────────────────────────────────────────────────────────────
 @dataclass
 class Entry:
-    title: str
-    url:   str
-    type:  str   # "movie" or "series"
+    title:   str
+    url:     str
+    type:    str          # "movie" or "series"
+    imdb_id: str = ""
+    tmdb_id: str = ""
+    server1: str = ""
+    server2: str = ""
+    server3: str = ""
+    server4: str = ""
+
+def entry_to_record(e: Entry) -> dict:
+    """Convert to the flat output format."""
+    return {
+        "title":   e.title,
+        "url":     e.url,
+        "type":    e.type,
+        "imdb_id": e.imdb_id,
+        "tmdb_id": e.tmdb_id,
+        "server1": e.server1,
+        "server2": e.server2,
+        "server3": e.server3,
+        "server4": e.server4,
+    }
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -117,11 +138,59 @@ def collect_urls(start: int, end: int) -> list[Entry]:
     return all_entries
 
 
-def save_json(entries: list[Entry], path: str = OUTPUT_FILE) -> None:
-    data = [asdict(e) for e in entries]
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    log.info(f"Saved {len(entries)} entries → {path}")
+# ── Save with 1 MB splitting ──────────────────────────────────────────────────
+def get_json_filename(index: int) -> str:
+    """movies.json, movies2.json, movies3.json ..."""
+    return "movies.json" if index == 1 else f"movies{index}.json"
+
+
+def load_existing(filename: str) -> list[dict]:
+    """Load existing records from a JSON file if it exists."""
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def save_with_split(new_entries: list[Entry]) -> None:
+    max_bytes    = MAX_FILE_MB * 1024 * 1024
+    new_records  = [entry_to_record(e) for e in new_entries]
+
+    # Find which file index to start appending into
+    file_index   = 1
+    while True:
+        fname = get_json_filename(file_index)
+        if not os.path.exists(fname):
+            break
+        size = os.path.getsize(fname)
+        if size < max_bytes:
+            break
+        file_index += 1
+
+    current_records = load_existing(get_json_filename(file_index))
+
+    for record in new_records:
+        current_records.append(record)
+        serialized = json.dumps(current_records, indent=2, ensure_ascii=False)
+
+        if len(serialized.encode("utf-8")) > max_bytes:
+            # Remove last record, save current file, start a new one
+            current_records.pop()
+            fname = get_json_filename(file_index)
+            with open(fname, "w", encoding="utf-8") as f:
+                f.write(json.dumps(current_records, indent=2, ensure_ascii=False))
+            log.info(f"File {fname} reached 1 MB limit — starting {get_json_filename(file_index + 1)}")
+            file_index     += 1
+            current_records = [record]
+
+    # Write whatever remains
+    fname = get_json_filename(file_index)
+    with open(fname, "w", encoding="utf-8") as f:
+        f.write(json.dumps(current_records, indent=2, ensure_ascii=False))
+    log.info(f"Saved to {fname} ({len(current_records)} records in this file)")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -133,7 +202,7 @@ if __name__ == "__main__":
         log.error("No URLs collected. Check BASE_URL and div.item selectors.")
         sys.exit(1)
 
-    save_json(entries)
+    save_with_split(entries)
 
     movies = sum(1 for e in entries if e.type == "movie")
     series = sum(1 for e in entries if e.type == "series")

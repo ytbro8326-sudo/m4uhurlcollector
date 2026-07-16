@@ -62,6 +62,7 @@ class Entry:
     title:   str
     url:     str
     type:    str          # "movie" or "series"
+    serial_no: int = 0    # Added serial number tracking
     imdb_id: str = ""
     tmdb_id: str = ""
     server1: str = ""
@@ -72,6 +73,7 @@ class Entry:
 def entry_to_record(e: Entry) -> dict:
     """Convert to the flat output format."""
     return {
+        "serial_no": e.serial_no,
         "title":   e.title,
         "url":     e.url,
         "type":    e.type,
@@ -134,8 +136,35 @@ def collect_urls(start: int, end: int) -> list[Entry]:
         all_entries.extend(found)
         if page < end:
             time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
-    log.info(f"Total URLs collected: {len(all_entries)}")
+    log.info(f"Total URLs collected on these pages: {len(all_entries)}")
     return all_entries
+
+
+# ── Global State & Deduplication ──────────────────────────────────────────────
+def load_global_state() -> tuple[set, int]:
+    """Reads all existing files to gather known URLs and the max serial number."""
+    seen_urls = set()
+    max_serial = 0
+    file_index = 1
+    
+    while True:
+        fname = get_json_filename(file_index)
+        if not os.path.exists(fname):
+            break
+        try:
+            with open(fname, "r", encoding="utf-8") as f:
+                records = json.load(f)
+                for rec in records:
+                    if "url" in rec:
+                        seen_urls.add(rec["url"])
+                    if "serial_no" in rec:
+                        max_serial = max(max_serial, rec.get("serial_no", 0))
+        except Exception as e:
+            log.warning(f"Could not parse {fname} for deduplication state: {e}")
+            pass
+        file_index += 1
+        
+    return seen_urls, max_serial
 
 
 # ── Save with 1 MB splitting ──────────────────────────────────────────────────
@@ -190,7 +219,7 @@ def save_with_split(new_entries: list[Entry]) -> None:
     fname = get_json_filename(file_index)
     with open(fname, "w", encoding="utf-8") as f:
         f.write(json.dumps(current_records, indent=2, ensure_ascii=False))
-    log.info(f"Saved to {fname} ({len(current_records)} records in this file)")
+    log.info(f"Saved to {fname} ({len(current_records)} total records in this specific file)")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -202,14 +231,33 @@ if __name__ == "__main__":
         log.error("No URLs collected. Check BASE_URL and div.item selectors.")
         sys.exit(1)
 
-    save_with_split(entries)
+    # Load existing state to ensure no duplicate URLs and to continue serial numbering
+    log.info("Checking for duplicates against existing JSON files...")
+    seen_urls, current_max_serial = load_global_state()
+    
+    unique_entries = []
+    for e in entries:
+        if e.url not in seen_urls:
+            current_max_serial += 1
+            e.serial_no = current_max_serial
+            unique_entries.append(e)
+            seen_urls.add(e.url) # Add to set to prevent duplicates within the exact same run
+            
+    if not unique_entries:
+        log.info("All scraped URLs are already in your JSON files. Nothing new to add!")
+        print(f"\n{'='*65}")
+        print("Done! No new unique records to save.")
+        print(f"{'='*65}")
+        sys.exit(0)
 
-    movies = sum(1 for e in entries if e.type == "movie")
-    series = sum(1 for e in entries if e.type == "series")
+    save_with_split(unique_entries)
+
+    movies = sum(1 for e in unique_entries if e.type == "movie")
+    series = sum(1 for e in unique_entries if e.type == "series")
     print(f"\n{'='*65}")
-    print(f"Done!  {len(entries)} total  |  {movies} movies  |  {series} series")
+    print(f"Done!  {len(unique_entries)} NEW unique entries added  |  {movies} movies  |  {series} series")
     print(f"{'='*65}")
-    print(f"{'#':<4} {'Type':<8} {'Title':<38} URL")
+    print(f"{'S.No':<6} {'Type':<8} {'Title':<35} URL")
     print("-" * 65)
-    for i, e in enumerate(entries, 1):
-        print(f"{i:<4} {e.type:<8} {e.title[:37]:<38} {e.url}")
+    for e in unique_entries:
+        print(f"{e.serial_no:<6} {e.type:<8} {e.title[:34]:<35} {e.url}")

@@ -8,8 +8,8 @@ Usage:
     python scraper.py 1 10            # pages 1-10
 """
 
-import sys, json, time, random, logging
-import requests
+import sys, json, time, random, logging, os
+from curl_cffi import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from dataclasses import dataclass, asdict
@@ -26,22 +26,19 @@ log = logging.getLogger(__name__)
 BASE_URL    = "https://ww1.m4uhd.page"
 START_PAGE  = int(sys.argv[1]) if len(sys.argv) > 1 else 1
 END_PAGE    = int(sys.argv[2]) if len(sys.argv) > 2 else 2
-DELAY_MIN   = 1.2
-DELAY_MAX   = 2.5
+DELAY_MIN   = 1.5
+DELAY_MAX   = 3.0
 MAX_RETRIES = 3
-TIMEOUT     = 15
+TIMEOUT     = 30
 OUTPUT_FILE = "movies.json"
 
 # ── Session ───────────────────────────────────────────────────────────────────
-S = requests.Session()
-S.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-})
+S = requests.Session(impersonate="chrome124")
+
+PROXY_URL = os.environ.get("PROXY_URL")
+if PROXY_URL:
+    S.proxies.update({"http": PROXY_URL, "https": PROXY_URL})
+    log.info("Proxy enabled.")
 
 # ── Data model ────────────────────────────────────────────────────────────────
 @dataclass

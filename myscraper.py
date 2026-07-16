@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from itertools import cycle
 
 # ── API Configurations ───────────────────────────────────────────
-GITHUB_TOKEN = os.getenv("PAT_TOKEN") # Keep this as a Secret!
+GITHUB_TOKEN = os.getenv("PAT_TOKEN") # Kept as a GitHub Secret
 TMDB_API_KEY = "6fad3f86b8452ee232deb7977d7dcf58" # Hardcoded as requested
 
 REPO_OWNER = "ytbro8326-sudo"

@@ -5,29 +5,17 @@ import os
 import time
 import random
 import requests
-import base64
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 from itertools import cycle
 
 # ── API Configurations ───────────────────────────────────────────
-GITHUB_TOKEN = os.getenv("PAT_TOKEN") # Kept as a GitHub Secret
-TMDB_API_KEY = "6fad3f86b8452ee232deb7977d7dcf58" # Hardcoded as requested
+TMDB_API_KEY = "6fad3f86b8452ee232deb7977d7dcf58" 
 
-REPO_OWNER = "ytbro8326-sudo"
-REPO_NAME = "m4uhurlcollector"
-FILE_PATH = "movies.json"
-BRANCH = "main"
-
-GITHUB_API_URL = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{FILE_PATH}"
-GITHUB_HEADERS = {
-    "Authorization": f"token {GITHUB_TOKEN}",
-    "Accept": "application/vnd.github.v3+json"
-}
-
-# ── Local File Configuration ─────────────────────────────────────
-JSON_SOURCE_URL = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/refs/heads/{BRANCH}/{FILE_PATH}"
-ERROR_FILE = "error_facing.txt"
+# File paths
+TARGET_JSON = os.getenv("TARGET_JSON", "movies.json")
+PROCESSED_FILE = "list_of_already_processed_urls.txt"
+ERROR_FILE = "list_of_facing_error.txt"
 
 # ── Proxies ──────────────────────────────────────────────────────
 PROXY_USER = "dxicdysy"
@@ -69,9 +57,27 @@ def set_new_proxy():
 
 set_new_proxy()
 
+# ── File I/O Helpers ──────────────────────────────────────────────
+def init_files():
+    """Creates tracking files if they don't exist and returns processed URLs."""
+    if not os.path.exists(PROCESSED_FILE):
+        open(PROCESSED_FILE, "w", encoding="utf-8").close()
+    if not os.path.exists(ERROR_FILE):
+        open(ERROR_FILE, "w", encoding="utf-8").close()
+        
+    with open(PROCESSED_FILE, "r", encoding="utf-8") as f:
+        return set(line.strip() for line in f if line.strip())
+
+def log_processed(url):
+    with open(PROCESSED_FILE, "a", encoding="utf-8") as f:
+        f.write(url + "\n")
+
+def log_error(url, error_msg):
+    with open(ERROR_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{url} | ERROR: {error_msg}\n")
+
 # ── Core Functions ───────────────────────────────────────────────
 def get_tmdb_id_from_imdb(imdb_id):
-    """Uses the TMDb Find API to get the TMDb ID using an IMDb ID."""
     if not TMDB_API_KEY:
         return ""
         
@@ -81,7 +87,6 @@ def get_tmdb_id_from_imdb(imdb_id):
         r.raise_for_status()
         data = r.json()
         
-        # Check movie results first, then TV show results
         if data.get("movie_results"):
             return str(data["movie_results"][0]["id"])
         elif data.get("tv_results"):
@@ -91,35 +96,6 @@ def get_tmdb_id_from_imdb(imdb_id):
         print(f"  [!] Failed to fetch TMDb ID for {imdb_id}: {e}")
         
     return ""
-
-def push_to_github(data):
-    """Pushes the updated JSON dictionary back to the GitHub repository."""
-    print("\n[+] Preparing to push updates to GitHub...")
-    try:
-        get_req = requests.get(GITHUB_API_URL, headers=GITHUB_HEADERS)
-        get_req.raise_for_status()
-        sha = get_req.json()['sha']
-
-        json_str = json.dumps(data, indent=4)
-        encoded_content = base64.b64encode(json_str.encode('utf-8')).decode('utf-8')
-
-        payload = {
-            "message": "Auto-update movies4.json with extracted server URLs and IDs",
-            "content": encoded_content,
-            "sha": sha,
-            "branch": BRANCH
-        }
-
-        put_req = requests.put(GITHUB_API_URL, headers=GITHUB_HEADERS, json=payload)
-        put_req.raise_for_status()
-        print("[+] Successfully committed and pushed to GitHub!")
-
-    except Exception as e:
-        print(f"[-] Failed to push to GitHub: {e}")
-
-def log_error(url):
-    with open(ERROR_FILE, "a", encoding="utf-8") as f:
-        f.write(url + "\n")
 
 def base(url):
     p = urlparse(url)
@@ -158,7 +134,8 @@ def extract_servers(target_url, max_retries=3):
 
             if "/watch-tvseries-" in target_url:
                 ep_ids = re.findall(r'idepisode=["\'](\w+)["\']', html)
-                if not ep_ids: return []
+                if not ep_ids: 
+                    return []
                 ep_id = ep_ids[0]  
                 server_html = post(f"{root}/ajaxtv", {"idepisode": ep_id, "_token": token}, target_url)
                 servers = spans(server_html)
@@ -180,72 +157,88 @@ def extract_servers(target_url, max_retries=3):
                 set_new_proxy()
             else:
                 print(f"  [!] Exhausted all retries for {target_url}.")
-                log_error(target_url)
+                log_error(target_url, f"Failed after {max_retries} retries: {str(e)}")
                 return []
+        except Exception as e:
+            log_error(target_url, f"Unexpected extraction error: {str(e)}")
+            return []
 
 # ── Main Loop ────────────────────────────────────────────────────
 def main():
-    if not os.path.exists(ERROR_FILE):
-        open(ERROR_FILE, "w", encoding="utf-8").close()
+    print(f"[*] Starting job for file: {TARGET_JSON}")
+    
+    # Check if target JSON actually exists
+    if not os.path.exists(TARGET_JSON):
+        print(f"[!] Error: {TARGET_JSON} not found in repository.")
+        sys.exit(1)
+        
+    processed_urls = init_files()
 
-    print(f"[*] Fetching base JSON from GitHub...")
-    r = requests.get(JSON_SOURCE_URL)
-    r.raise_for_status()
-    data = r.json()
+    with open(TARGET_JSON, "r", encoding="utf-8") as f:
+        data = json.load(f)
 
-    print(f"[*] Total records to process: {len(data)}")
+    print(f"[*] Total records in {TARGET_JSON}: {len(data)}")
 
     try:
         for item in data:
             target_url = item.get("url")
             
-            # Skip if URL is missing or if server1 is already populated
-            if not target_url or item.get("server1"):
+            # Skip if URL is missing, already populated, or already in processed list
+            if not target_url or item.get("server1") or target_url in processed_urls:
                 continue
 
-            print(f"-> Processing: {item.get('title', 'Unknown Title')}")
-            embeds = extract_servers(target_url)
-
-            # Map the servers
-            for i in range(1, 5):
-                server_key = f"server{i}"
-                if i <= len(embeds):
-                    item[server_key] = embeds[i-1]
-                else:
-                    item[server_key] = ""
-
-            # Extract IMDb ID and fetch TMDb ID
-            found_imdb_id = ""
-            for url in embeds:
-                # Look for "tt" followed by 7 to 10 digits
-                match = re.search(r'(tt\d{7,10})', url)
-                if match:
-                    found_imdb_id = match.group(1)
-                    break
+            print(f"-> Processing: {item.get('title', 'Unknown Title')} ({target_url})")
             
-            if found_imdb_id:
-                item["imdb_id"] = found_imdb_id
-                print(f"   Found IMDb ID: {found_imdb_id}")
+            try:
+                embeds = extract_servers(target_url)
                 
-                # Ping TMDb API
-                tmdb_id = get_tmdb_id_from_imdb(found_imdb_id)
-                if tmdb_id:
-                    item["tmdb_id"] = tmdb_id
-                    print(f"   Fetched TMDb ID: {tmdb_id}")
+                # If extraction returned empty, log as an error but don't crash
+                if not embeds:
+                    log_error(target_url, "No embeds found or extraction failed.")
+                    continue
 
-            print(f"   Processed and mapped {len(embeds)} servers.")
+                # Map the servers
+                for i in range(1, 5):
+                    server_key = f"server{i}"
+                    if i <= len(embeds):
+                        item[server_key] = embeds[i-1]
+                    else:
+                        item[server_key] = ""
+
+                # Extract IMDb ID and fetch TMDb ID
+                found_imdb_id = ""
+                for url in embeds:
+                    match = re.search(r'(tt\d{7,10})', url)
+                    if match:
+                        found_imdb_id = match.group(1)
+                        break
+                
+                if found_imdb_id:
+                    item["imdb_id"] = found_imdb_id
+                    print(f"   Found IMDb ID: {found_imdb_id}")
+                    
+                    tmdb_id = get_tmdb_id_from_imdb(found_imdb_id)
+                    if tmdb_id:
+                        item["tmdb_id"] = tmdb_id
+                        print(f"   Fetched TMDb ID: {tmdb_id}")
+
+                print(f"   Processed and mapped {len(embeds)} servers.")
+                
+                # Add to successful processing list
+                processed_urls.add(target_url)
+                log_processed(target_url)
+
+            except Exception as e:
+                print(f"  [!] Error processing item: {e}")
+                log_error(target_url, f"Item processing crashed: {str(e)}")
 
     except KeyboardInterrupt:
-        print("\n[!] Script manually interrupted. Pushing current progress...")
-        push_to_github(data)
-        sys.exit(0)
-    except Exception as e:
-        print(f"\n[!] Unexpected error: {e}. Pushing current progress...")
-        push_to_github(data)
-        sys.exit(1)
-
-    print("\n[*] Processing complete!")
-    push_to_github(data)
+        print("\n[!] Script manually interrupted. Saving JSON...")
+    finally:
+        # Always write the updated JSON data back out
+        with open(TARGET_JSON, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+        print(f"[*] Saved updates to {TARGET_JSON}.")
 
 if __name__ == "__main__":
     main()

@@ -16,7 +16,7 @@ TMDB_API_KEY = "6fad3f86b8452ee232deb7977d7dcf58" # Hardcoded as requested
 
 REPO_OWNER = "ytbro8326-sudo"
 REPO_NAME = "m4uhurlcollector"
-FILE_PATH = "movies4.json"
+FILE_PATH = "movies.json"
 BRANCH = "main"
 
 GITHUB_API_URL = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{FILE_PATH}"

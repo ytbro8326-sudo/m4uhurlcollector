@@ -88,11 +88,14 @@ def entry_to_record(e: Entry) -> dict:
 
 
 # ── Page Tracking ─────────────────────────────────────────────────────────────
+def init_tracker_file():
+    """Creates the tracking file if it doesn't already exist."""
+    if not os.path.exists(PROCESSED_PAGES_FILE):
+        open(PROCESSED_PAGES_FILE, 'a', encoding="utf-8").close()
+        log.info(f"Created new tracking file: {PROCESSED_PAGES_FILE}")
+
 def get_processed_pages() -> set:
     """Reads the processed pages file and returns a set of completed page numbers."""
-    if not os.path.exists(PROCESSED_PAGES_FILE):
-        return set()
-    
     processed = set()
     with open(PROCESSED_PAGES_FILE, "r", encoding="utf-8") as f:
         for line in f:
@@ -248,6 +251,9 @@ def save_with_split(new_entries: list[Entry]) -> None:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
+    # Ensure our tracking file exists right away
+    init_tracker_file()
+
     log.info(f"=== Collecting URLs (pages {START_PAGE}–{END_PAGE}) ===")
     entries = collect_urls(START_PAGE, END_PAGE)
 

@@ -2,8 +2,23 @@ name: M4UHD URL Extractor
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # Runs every 6 hours
-  workflow_dispatch: # Allows you to trigger it manually from the Actions tab
+    - cron: '0 */6 * * *' # Runs every 6 hours (defaults to movies.json)
+  workflow_dispatch:
+    inputs:
+      target_json:
+        description: 'Select the JSON file to process'
+        required: true
+        default: 'movies.json'
+        type: choice
+        options:
+          - movies.json
+          - movies2.json
+          - movies3.json
+          - movies4.json
+
+# Grant the action permission to push code back to your repo
+permissions:
+  contents: write
 
 jobs:
   scrape-and-update:
@@ -25,5 +40,20 @@ jobs:
 
       - name: Run Scraper
         env:
-          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+          # Passes the chosen dropdown option (or default) to Python
+          TARGET_JSON: ${{ github.event.inputs.target_json || 'movies.json' }}
         run: python myscraper.py
+
+      - name: Commit and Push Changes
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          
+          # Stage all changed or newly created files (.json and .txt)
+          git add .
+          
+          # Commit only if there are changes
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto-update $TARGET_JSON and tracking files"
+          
+          # Push to the main branch
+          git push

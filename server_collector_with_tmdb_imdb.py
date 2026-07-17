@@ -10,12 +10,28 @@ from urllib.parse import urlparse
 from itertools import cycle
 
 # ── API Configurations ───────────────────────────────────────────
-TMDB_API_KEY = "6fad3f86b8452ee232deb7977d7dcf58" 
+TMDB_API_KEY = "6fad3f86b8452ee232deb7977d7dcf58"
 
 # File paths
 TARGET_JSON = os.getenv("TARGET_JSON", "movies.json")
 PROCESSED_FILE = "list_of_already_processed_urls.txt"
 ERROR_FILE = "list_of_facing_error.txt"
+
+# ── URL Limit ────────────────────────────────────────────────────
+# Reads URL_LIMIT from environment. Accepts a number or "full".
+# Defaults to 100 if not set or invalid.
+def parse_url_limit():
+    raw = os.getenv("URL_LIMIT", "100").strip().lower()
+    if raw == "full":
+        return None  # None means no limit — process everything
+    try:
+        val = int(raw)
+        return val if val > 0 else 100
+    except ValueError:
+        print(f"[!] Invalid URL_LIMIT value '{raw}'. Defaulting to 100.")
+        return 100
+
+URL_LIMIT = parse_url_limit()
 
 # ── Proxies ──────────────────────────────────────────────────────
 PROXY_USER = "dxicdysy"
@@ -42,7 +58,7 @@ proxy_pool = cycle(formatted_proxies)
 # ── Single Session ───────────────────────────────────────────────
 S = requests.Session()
 S.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", 
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
     "X-Requested-With": "XMLHttpRequest"
 })
 
@@ -64,7 +80,7 @@ def init_files():
         open(PROCESSED_FILE, "w", encoding="utf-8").close()
     if not os.path.exists(ERROR_FILE):
         open(ERROR_FILE, "w", encoding="utf-8").close()
-        
+
     with open(PROCESSED_FILE, "r", encoding="utf-8") as f:
         return set(line.strip() for line in f if line.strip())
 
@@ -80,21 +96,21 @@ def log_error(url, error_msg):
 def get_tmdb_id_from_imdb(imdb_id):
     if not TMDB_API_KEY:
         return ""
-        
+
     url = f"https://api.themoviedb.org/3/find/{imdb_id}?api_key={TMDB_API_KEY}&external_source=imdb_id"
     try:
         r = requests.get(url, timeout=10)
         r.raise_for_status()
         data = r.json()
-        
+
         if data.get("movie_results"):
             return str(data["movie_results"][0]["id"])
         elif data.get("tv_results"):
             return str(data["tv_results"][0]["id"])
-            
+
     except Exception as e:
         print(f"  [!] Failed to fetch TMDb ID for {imdb_id}: {e}")
-        
+
     return ""
 
 def base(url):
@@ -110,7 +126,7 @@ def spans(html):
     return [
         (s.get_text(strip=True), s["data"])
         for s in soup.find_all("span", attrs={"data": True})
-        if len(s.get("data","")) > 10
+        if len(s.get("data", "")) > 10
     ]
 
 def iframe(html):
@@ -134,9 +150,9 @@ def extract_servers(target_url, max_retries=3):
 
             if "/watch-tvseries-" in target_url:
                 ep_ids = re.findall(r'idepisode=["\'](\w+)["\']', html)
-                if not ep_ids: 
+                if not ep_ids:
                     return []
-                ep_id = ep_ids[0]  
+                ep_id = ep_ids[0]
                 server_html = post(f"{root}/ajaxtv", {"idepisode": ep_id, "_token": token}, target_url)
                 servers = spans(server_html)
             else:
@@ -148,7 +164,7 @@ def extract_servers(target_url, max_retries=3):
                 url = iframe(embed_html)
                 if url:
                     extracted_urls.append(url)
-                    
+
             return extracted_urls
 
         except requests.exceptions.RequestException as e:
@@ -165,13 +181,15 @@ def extract_servers(target_url, max_retries=3):
 
 # ── Main Loop ────────────────────────────────────────────────────
 def main():
+    limit_label = "full (no limit)" if URL_LIMIT is None else str(URL_LIMIT)
     print(f"[*] Starting job for file: {TARGET_JSON}")
-    
+    print(f"[*] URL limit: {limit_label}")
+
     # Check if target JSON actually exists
     if not os.path.exists(TARGET_JSON):
         print(f"[!] Error: {TARGET_JSON} not found in repository.")
         sys.exit(1)
-        
+
     processed_urls = init_files()
 
     with open(TARGET_JSON, "r", encoding="utf-8") as f:
@@ -179,19 +197,28 @@ def main():
 
     print(f"[*] Total records in {TARGET_JSON}: {len(data)}")
 
-    try:
-        for item in data:
-            target_url = item.get("url")
-            
-            # Skip if URL is missing, already populated, or already in processed list
-            if not target_url or item.get("server1") or target_url in processed_urls:
-                continue
+    # Build the queue: items that still need processing
+    queue = [
+        item for item in data
+        if item.get("url")
+        and not item.get("server1")
+        and item["url"] not in processed_urls
+    ]
 
+    # Apply the URL limit
+    if URL_LIMIT is not None:
+        queue = queue[:URL_LIMIT]
+
+    print(f"[*] URLs queued for this run: {len(queue)}")
+
+    try:
+        for item in queue:
+            target_url = item["url"]
             print(f"-> Processing: {item.get('title', 'Unknown Title')} ({target_url})")
-            
+
             try:
                 embeds = extract_servers(target_url)
-                
+
                 # If extraction returned empty, log as an error but don't crash
                 if not embeds:
                     log_error(target_url, "No embeds found or extraction failed.")
@@ -200,10 +227,7 @@ def main():
                 # Map the servers
                 for i in range(1, 5):
                     server_key = f"server{i}"
-                    if i <= len(embeds):
-                        item[server_key] = embeds[i-1]
-                    else:
-                        item[server_key] = ""
+                    item[server_key] = embeds[i - 1] if i <= len(embeds) else ""
 
                 # Extract IMDb ID and fetch TMDb ID
                 found_imdb_id = ""
@@ -212,18 +236,18 @@ def main():
                     if match:
                         found_imdb_id = match.group(1)
                         break
-                
+
                 if found_imdb_id:
                     item["imdb_id"] = found_imdb_id
                     print(f"   Found IMDb ID: {found_imdb_id}")
-                    
+
                     tmdb_id = get_tmdb_id_from_imdb(found_imdb_id)
                     if tmdb_id:
                         item["tmdb_id"] = tmdb_id
                         print(f"   Fetched TMDb ID: {tmdb_id}")
 
                 print(f"   Processed and mapped {len(embeds)} servers.")
-                
+
                 # Add to successful processing list
                 processed_urls.add(target_url)
                 log_processed(target_url)

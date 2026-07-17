@@ -15,6 +15,22 @@ on:
           - movies2.json
           - movies3.json
           - movies4.json
+          - movies5.json
+          - movies6.json
+          - movies7.json
+          - movies8.json
+          - movies9.json
+          - movies10.json
+          - movies11.json
+          - movies12.json
+          - movies13.json
+          - movies14.json
+          - movies15.json
+          - movies16.json
+          - movies17.json
+          - movies18.json
+          - series.json
+          - series2.json
 
       url_limit:
         description: 'How many URLs to process (default: 100)'

@@ -1,4 +1,4 @@
-name: M4UHD URL Scraper
+name: Main Url Collector
 
 on:
   workflow_dispatch:

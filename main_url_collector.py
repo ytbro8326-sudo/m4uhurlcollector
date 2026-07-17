@@ -1,13 +1,18 @@
 """
 m4uhd.page — URL Collector
 ===========================
-Collect every movie/series URL from /new-movies listing pages.
-Saves to movies.json, movies2.json, etc. (max 5000 records each).
-Tracks processed pages in page_already_processed.txt.
+Collect every movie URL from /new-movies listing pages.
+Collect every series URL from /new-tvseries listing pages.
+Saves movies to movies.json, movies2.json, etc. (max 5000 records each).
+Saves series to series.json, series2.json, etc. (max 5000 records each).
+Tracks processed pages in page_already_processed.txt (movies)
+                       and series_page_already_processed.txt (series).
 
 Usage:
-    python scraper.py                 # pages 1-2 (default)
-    python scraper.py 1 10            # pages 1-10
+    python main_url_collector.py                         # movies pages 1-2 (default)
+    python main_url_collector.py 1 10                    # movies pages 1-10
+    python main_url_collector.py 1 10 --series 1 177     # movies 1-10 AND series 1-177
+    python main_url_collector.py --series 1 177          # series only
 """
 
 import sys, json, time, random, logging, os
@@ -25,15 +30,58 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ── Config ────────────────────────────────────────────────────────────────────
-BASE_URL             = "https://ww1.m4uhd.page"
-START_PAGE           = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-END_PAGE             = int(sys.argv[2]) if len(sys.argv) > 2 else 2
-DELAY_MIN            = 1.5
-DELAY_MAX            = 3.0
-MAX_RETRIES          = 3
-TIMEOUT              = 30
-MAX_RECORDS          = 5000   # Auto-split file when it hits 5000 records
-PROCESSED_PAGES_FILE = "page_already_processed.txt"
+BASE_URL                      = "https://ww1.m4uhd.page"
+DELAY_MIN                     = 1.5
+DELAY_MAX                     = 3.0
+MAX_RETRIES                   = 3
+TIMEOUT                       = 30
+MAX_RECORDS                   = 5000
+MOVIES_PROCESSED_PAGES_FILE   = "page_already_processed.txt"
+SERIES_PROCESSED_PAGES_FILE   = "series_page_already_processed.txt"
+
+# ── Argument Parsing ──────────────────────────────────────────────────────────
+def parse_args():
+    """
+    Supports:
+        scraper.py                         → movies 1-2
+        scraper.py 1 10                    → movies 1-10
+        scraper.py 1 10 --series 1 177     → movies 1-10, series 1-177
+        scraper.py --series 1 177          → series 1-177 only (movies skipped)
+    """
+    args = sys.argv[1:]
+    movie_start = movie_end = None
+    series_start = series_end = None
+
+    if "--series" in args:
+        idx = args.index("--series")
+        # Everything before --series is movie range
+        movie_args = args[:idx]
+        series_args = args[idx + 1:]
+
+        if len(series_args) >= 2:
+            series_start = int(series_args[0])
+            series_end   = int(series_args[1])
+
+        if len(movie_args) >= 2:
+            movie_start = int(movie_args[0])
+            movie_end   = int(movie_args[1])
+        elif len(movie_args) == 0:
+            # --series only mode: skip movies
+            movie_start = movie_end = None
+        else:
+            movie_start = movie_end = int(movie_args[0])
+    else:
+        # No --series flag — original behaviour
+        if len(args) >= 2:
+            movie_start = int(args[0])
+            movie_end   = int(args[1])
+        elif len(args) == 1:
+            movie_start = movie_end = int(args[0])
+        else:
+            movie_start, movie_end = 1, 2
+
+    return movie_start, movie_end, series_start, series_end
+
 
 # ── Proxies ───────────────────────────────────────────────────────────────────
 PROXY_USER = "dxicdysy"
@@ -63,8 +111,8 @@ def get_random_proxy() -> dict:
 class Entry:
     title:     str
     url:       str
-    type:      str         
-    serial_no: int = 0    
+    type:      str
+    serial_no: int = 0
     imdb_id:   str = ""
     tmdb_id:   str = ""
     server1:   str = ""
@@ -88,26 +136,26 @@ def entry_to_record(e: Entry) -> dict:
 
 
 # ── Page Tracking ─────────────────────────────────────────────────────────────
-def init_tracker_file():
+def init_tracker_file(filepath: str):
     """Creates the tracking file if it doesn't already exist."""
-    if not os.path.exists(PROCESSED_PAGES_FILE):
-        open(PROCESSED_PAGES_FILE, 'a', encoding="utf-8").close()
-        log.info(f"Created new tracking file: {PROCESSED_PAGES_FILE}")
+    if not os.path.exists(filepath):
+        open(filepath, 'a', encoding="utf-8").close()
+        log.info(f"Created new tracking file: {filepath}")
 
-def get_processed_pages() -> set:
+def get_processed_pages(filepath: str) -> set:
     """Reads the processed pages file and returns a set of completed page numbers."""
     processed = set()
-    if os.path.exists(PROCESSED_PAGES_FILE):
-        with open(PROCESSED_PAGES_FILE, "r", encoding="utf-8") as f:
+    if os.path.exists(filepath):
+        with open(filepath, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line.isdigit():
                     processed.add(int(line))
     return processed
 
-def mark_page_processed(page: int) -> None:
+def mark_page_processed(page: int, filepath: str) -> None:
     """Appends a successfully scraped page number to the tracker file."""
-    with open(PROCESSED_PAGES_FILE, "a", encoding="utf-8") as f:
+    with open(filepath, "a", encoding="utf-8") as f:
         f.write(f"{page}\n")
 
 
@@ -129,7 +177,11 @@ def http_get(url: str) -> str | None:
                 time.sleep(2 ** attempt)
     return None
 
-def parse_listing_page(html: str) -> list[Entry]:
+def parse_listing_page(html: str, force_type: str | None = None) -> list[Entry]:
+    """
+    force_type: if 'series' or 'movie', override URL-based detection.
+    Useful for /new-tvseries pages where all items are series.
+    """
     soup    = BeautifulSoup(html, "html.parser")
     entries = []
     for item in soup.select("div.item"):
@@ -141,49 +193,70 @@ def parse_listing_page(html: str) -> list[Entry]:
             continue
         url   = urljoin(BASE_URL, href)
         title = anchor.get("title", "").strip() or anchor.get_text(strip=True)
-        kind  = "series" if "/watch-tvseries-" in url else "movie"
+        if force_type:
+            kind = force_type
+        else:
+            kind = "series" if "/watch-tvseries-" in url else "movie"
         entries.append(Entry(title=title, url=url, type=kind))
     return entries
 
-def collect_urls(start: int, end: int) -> list[Entry]:
+def collect_urls(start: int, end: int, listing_path: str,
+                 tracker_file: str, force_type: str | None = None) -> list[Entry]:
+    """Generic page collector. listing_path e.g. '/new-movies' or '/new-tvseries'."""
     all_entries: list[Entry] = []
-    processed_pages = get_processed_pages()
-    
+    processed_pages = get_processed_pages(tracker_file)
+
     for page in range(start, end + 1):
         if page in processed_pages:
             log.info(f"Skipping page {page}/{end} — already processed.")
             continue
-            
-        url  = f"{BASE_URL}/new-movies?page={page}"
-        log.info(f"Listing page {page}/{end} → {url}")
-        
+
+        url  = f"{BASE_URL}{listing_path}?page={page}"
+        log.info(f"Page {page}/{end} → {url}")
+
         html = http_get(url)
         if html is None:
-            log.warning(f"Skipping listing page {page} due to fetch failure.")
+            log.warning(f"Skipping page {page} due to fetch failure.")
             continue
-            
-        found = parse_listing_page(html)
+
+        found = parse_listing_page(html, force_type=force_type)
         log.info(f"Page {page}: {len(found)} entries collected.")
         all_entries.extend(found)
-        
-        # Mark as processed only after a successful fetch and parse
-        mark_page_processed(page)
-        
+
+        mark_page_processed(page, tracker_file)
+
         if page < end:
             time.sleep(random.uniform(DELAY_MIN, DELAY_MAX))
-            
-    log.info(f"Total URLs collected on this run: {len(all_entries)}")
+
+    log.info(f"Total URLs collected this run: {len(all_entries)}")
     return all_entries
 
 
-# ── Global State & Deduplication ──────────────────────────────────────────────
-def load_global_state() -> tuple[set, int]:
-    seen_urls = set()
+# ── JSON file helpers ─────────────────────────────────────────────────────────
+def get_json_filename(index: int, prefix: str) -> str:
+    """
+    prefix='movies' → movies.json, movies2.json, movies3.json …
+    prefix='series' → series.json, series2.json, series3.json …
+    """
+    return f"{prefix}.json" if index == 1 else f"{prefix}{index}.json"
+
+def load_existing(filename: str) -> list[dict]:
+    if os.path.exists(filename):
+        try:
+            with open(filename, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+def load_global_state(prefix: str) -> tuple[set, int]:
+    """Scan all existing JSON files for a prefix and return (seen_urls, max_serial)."""
+    seen_urls  = set()
     max_serial = 0
     file_index = 1
-    
+
     while True:
-        fname = get_json_filename(file_index)
+        fname = get_json_filename(file_index, prefix)
         if not os.path.exists(fname):
             break
         try:
@@ -196,103 +269,117 @@ def load_global_state() -> tuple[set, int]:
                         max_serial = max(max_serial, rec.get("serial_no", 0))
         except Exception as e:
             log.warning(f"Could not parse {fname} for deduplication state: {e}")
-            pass
         file_index += 1
-        
+
     return seen_urls, max_serial
 
-
-# ── Save with 5000 limit splitting ────────────────────────────────────────────
-def get_json_filename(index: int) -> str:
-    return "movies.json" if index == 1 else f"movies{index}.json"
-
-def load_existing(filename: str) -> list[dict]:
-    if os.path.exists(filename):
-        try:
-            with open(filename, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return []
-
-def save_with_split(new_entries: list[Entry]) -> None:
+def save_with_split(new_entries: list[Entry], prefix: str) -> None:
+    """Append records to JSON files, splitting at MAX_RECORDS per file."""
     new_records = [entry_to_record(e) for e in new_entries]
 
-    # 1. Find the latest active file that isn't full yet
+    # Find the latest active file that isn't full yet
     file_index = 1
     while True:
-        fname = get_json_filename(file_index)
+        fname = get_json_filename(file_index, prefix)
         if not os.path.exists(fname):
             break
-        
         current_records = load_existing(fname)
         if len(current_records) < MAX_RECORDS:
-            break # Found a file that still has room
-            
+            break
         file_index += 1
 
-    current_records = load_existing(get_json_filename(file_index))
+    current_records = load_existing(get_json_filename(file_index, prefix))
 
-    # 2. Append records, splitting when 5000 is reached
     for record in new_records:
         if len(current_records) >= MAX_RECORDS:
-            # Save the current file since it's full
-            fname = get_json_filename(file_index)
+            fname = get_json_filename(file_index, prefix)
             with open(fname, "w", encoding="utf-8") as f:
                 json.dump(current_records, f, indent=2, ensure_ascii=False)
-            log.info(f"File {fname} reached {MAX_RECORDS} limit — starting {get_json_filename(file_index + 1)}")
-            
-            # Reset for the next file
-            file_index += 1
+            log.info(f"File {fname} reached {MAX_RECORDS} limit — starting {get_json_filename(file_index + 1, prefix)}")
+            file_index    += 1
             current_records = []
 
         current_records.append(record)
 
-    # 3. Save any remaining records to the latest file
     if current_records:
-        fname = get_json_filename(file_index)
+        fname = get_json_filename(file_index, prefix)
         with open(fname, "w", encoding="utf-8") as f:
             json.dump(current_records, f, indent=2, ensure_ascii=False)
         log.info(f"Saved to {fname} ({len(current_records)} total records in this file)")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-if __name__ == "__main__":
-    init_tracker_file()
+# ── Per-type runner ───────────────────────────────────────────────────────────
+def run_collection(start: int, end: int, listing_path: str,
+                   tracker_file: str, prefix: str,
+                   force_type: str | None = None) -> None:
+    label = prefix.capitalize()
+    log.info(f"=== Collecting {label} URLs (pages {start}–{end}) ===")
 
-    log.info(f"=== Collecting URLs (pages {START_PAGE}–{END_PAGE}) ===")
-    entries = collect_urls(START_PAGE, END_PAGE)
+    entries = collect_urls(start, end, listing_path, tracker_file, force_type)
 
     if not entries:
-        log.info("No new URLs collected. Either pages were skipped or parsing failed.")
-        sys.exit(0)
+        log.info(f"No new {label} URLs collected.")
+        return
 
-    log.info("Checking for duplicates against existing JSON files...")
-    seen_urls, current_max_serial = load_global_state()
-    
+    log.info(f"Checking {label} entries for duplicates…")
+    seen_urls, current_max_serial = load_global_state(prefix)
+
     unique_entries = []
     for e in entries:
         if e.url not in seen_urls:
             current_max_serial += 1
             e.serial_no = current_max_serial
             unique_entries.append(e)
-            seen_urls.add(e.url) 
-            
+            seen_urls.add(e.url)
+
     if not unique_entries:
-        log.info("All scraped URLs are already in your JSON files. Nothing new to add!")
-        print(f"\n{'='*65}")
-        print("Done! No new unique records to save.")
-        print(f"{'='*65}")
-        sys.exit(0)
+        log.info(f"All {label} URLs already exist. Nothing new to add.")
+        return
 
-    save_with_split(unique_entries)
+    save_with_split(unique_entries, prefix)
 
-    movies = sum(1 for e in unique_entries if e.type == "movie")
-    series = sum(1 for e in unique_entries if e.type == "series")
+    movies_count = sum(1 for e in unique_entries if e.type == "movie")
+    series_count = sum(1 for e in unique_entries if e.type == "series")
     print(f"\n{'='*65}")
-    print(f"Done!  {len(unique_entries)} NEW unique entries added  |  {movies} movies  |  {series} series")
+    print(f"{label} done!  {len(unique_entries)} NEW unique entries  |  "
+          f"{movies_count} movies  |  {series_count} series")
     print(f"{'='*65}")
     print(f"{'S.No':<6} {'Type':<8} {'Title':<35} URL")
     print("-" * 65)
     for e in unique_entries:
         print(f"{e.serial_no:<6} {e.type:<8} {e.title[:34]:<35} {e.url}")
+
+
+# ── Main ──────────────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    movie_start, movie_end, series_start, series_end = parse_args()
+
+    # Initialise tracker files
+    init_tracker_file(MOVIES_PROCESSED_PAGES_FILE)
+    init_tracker_file(SERIES_PROCESSED_PAGES_FILE)
+
+    # ── Movies ────────────────────────────────────────────────────────────────
+    if movie_start is not None and movie_end is not None:
+        run_collection(
+            start        = movie_start,
+            end          = movie_end,
+            listing_path = "/new-movies",
+            tracker_file = MOVIES_PROCESSED_PAGES_FILE,
+            prefix       = "movies",
+            force_type   = "movie",
+        )
+    else:
+        log.info("Movie collection skipped (no movie page range provided).")
+
+    # ── Series ────────────────────────────────────────────────────────────────
+    if series_start is not None and series_end is not None:
+        run_collection(
+            start        = series_start,
+            end          = series_end,
+            listing_path = "/new-tvseries",
+            tracker_file = SERIES_PROCESSED_PAGES_FILE,
+            prefix       = "series",
+            force_type   = "series",
+        )
+    else:
+        log.info("Series collection skipped (no --series page range provided).")

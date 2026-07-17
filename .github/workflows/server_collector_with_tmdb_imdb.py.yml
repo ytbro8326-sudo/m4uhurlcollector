@@ -1,4 +1,4 @@
-name: server URL collectore and tmdb id extract with hellp with imdb id
+name: server URL collector and tmdb id extract with hellp with imdb id
 
 on:
   schedule:

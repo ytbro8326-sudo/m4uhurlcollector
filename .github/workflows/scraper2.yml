@@ -42,7 +42,7 @@ jobs:
         env:
           # Passes the chosen dropdown option (or default) to Python
           TARGET_JSON: ${{ github.event.inputs.target_json || 'movies.json' }}
-        run: python myscraper.py
+        run: python server_collector_with_tmdb_imdb.py
 
       - name: Commit and Push Changes
         run: |

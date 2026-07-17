@@ -1,8 +1,8 @@
-name: server URL collector and tmdb id extract with hellp with imdb id
+name: server URL collector and tmdb id extract with help with imdb id
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # Runs every 6 hours (defaults to movies.json)
+    - cron: '0 */6 * * *' # Runs every 6 hours (defaults to movies.json, 100 URLs)
   workflow_dispatch:
     inputs:
       target_json:
@@ -15,6 +15,21 @@ on:
           - movies2.json
           - movies3.json
           - movies4.json
+
+      url_limit:
+        description: 'How many URLs to process (default: 100)'
+        required: false
+        default: '100'
+        type: choice
+        options:
+          - '10'
+          - '50'
+          - '100'
+          - '250'
+          - '500'
+          - '1000'
+          - '2500'
+          - 'full'
 
 # Grant the action permission to push code back to your repo
 permissions:
@@ -42,6 +57,7 @@ jobs:
         env:
           # Passes the chosen dropdown option (or default) to Python
           TARGET_JSON: ${{ github.event.inputs.target_json || 'movies.json' }}
+          URL_LIMIT: ${{ github.event.inputs.url_limit || '100' }}
         run: python server_collector_with_tmdb_imdb.py
 
       - name: Commit and Push Changes
@@ -53,7 +69,7 @@ jobs:
           git add .
           
           # Commit only if there are changes
-          git diff --quiet && git diff --staged --quiet || git commit -m "Auto-update $TARGET_JSON and tracking files"
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto-update $TARGET_JSON (limit: $URL_LIMIT URLs)"
           
           # Push to the main branch
           git push

@@ -376,7 +376,7 @@ if __name__ == "__main__":
         run_collection(
             start        = series_start,
             end          = series_end,
-            listing_path = "/new-tvseries",
+            listing_path = "/new-tv-series",
             tracker_file = SERIES_PROCESSED_PAGES_FILE,
             prefix       = "series",
             force_type   = "series",

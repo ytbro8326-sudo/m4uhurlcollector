@@ -91,3 +91,5 @@ https://ww1.m4uhd.page/watch-movie-billion-dollar-boner-1960-300545.html | ERROR
 https://ww1.m4uhd.page/watch-movie-billion-dollar-boner-1960-300545.html | ERROR: No embeds found or extraction failed.
 https://ww1.m4uhd.page/watch-movie-flea-for-two-1955-300543.html | ERROR: Failed after 3 retries: HTTPSConnectionPool(host='ww1.m4uhd.page', port=443): Max retries exceeded with url: /watch-movie-flea-for-two-1955-300543.html (Caused by ProxyError('Unable to connect to proxy', OSError('Tunnel connection failed: 502 Bad Gateway')))
 https://ww1.m4uhd.page/watch-movie-flea-for-two-1955-300543.html | ERROR: No embeds found or extraction failed.
+https://ww1.m4uhd.page/watch-movie-data-center-dynamics-ai-and-energy-demand-2025-299005.html | ERROR: Failed after 3 retries: 429 Client Error: Too Many Requests for url: https://ww1.m4uhd.page/ajax
+https://ww1.m4uhd.page/watch-movie-data-center-dynamics-ai-and-energy-demand-2025-299005.html | ERROR: No embeds found or extraction failed.
